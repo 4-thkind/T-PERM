@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+backend/venv/
+backend/__pycache__/
+backend/cube/__pycache__/
+backend/utils/__pycache__/
+
+# Large models / binary assets (>100MB)
+backend/*.glb
+backend/debug_*.jpg
+
+# Environment & Node
+.env
+node_modules/
+.DS_Store
+Thumbs.db
