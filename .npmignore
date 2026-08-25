@@ -1,0 +1,10 @@
+backend/venv/
+backend/__pycache__/
+backend/cube/__pycache__/
+backend/utils/__pycache__/
+backend/*.glb
+backend/*.task
+backend/debug_*.jpg
+.git/
+*.pyc
+*.pyo
