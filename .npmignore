@@ -3,8 +3,13 @@ backend/__pycache__/
 backend/cube/__pycache__/
 backend/utils/__pycache__/
 backend/*.glb
-backend/*.task
 backend/debug_*.jpg
 .git/
 *.pyc
 *.pyo
+
+# ship hand_landmarker.task (7.5MB) - the CLI needs it
+backend/venv/
+backend/diagnose_tracking.py
+backend/test_*.py
+assets/

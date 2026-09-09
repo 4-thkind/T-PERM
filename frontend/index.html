@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>T-PERM — Touchless Permutation & Execution for Rubik’s Manipulation</title>
+<meta name="description" content="T-PERM: Gesture-driven 3x3 AR Rubik's Cube manipulation. Powered by Python backend with MediaPipe hand tracking." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- ── BOOT / CONSOLE SCREEN ─────────────────────────────────────────────── -->
+<div id="boot-screen">
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="boot-frame">
+    <div class="boot-eyebrow">
+      <span class="dot"></span> T-PERM &middot; TOUCHLESS RUBIK'S MANIPULATION &middot; PYTHON CORE
+    </div>
+    <h1 class="boot-title">T-PERM</h1>
+    <p class="boot-sub">Touchless Permutation & Execution for Rubik's Manipulation. A physical Rubik's cube that lives in your hands — tracked by your webcam, rendered in real time, and solved with gestures alone.</p>
+
+    <div class="boot-panel">
+      <div class="panel-row panel-head">
+        <span>GESTURE</span><span>ACTION</span>
+      </div>
+      <div class="panel-row"><span>Both hands together</span><span>Spawn the cube</span></div>
+      <div class="panel-row"><span>Twist / tilt your wrist</span><span>Rotate the view</span></div>
+      <div class="panel-row"><span>Palm flat, facing down / up</span><span>Snap to top / bottom face</span></div>
+      <div class="panel-row"><span>Pinch an edge + drag</span><span>Turn that layer</span></div>
+      <div class="panel-row"><span>Open palm (show 5)</span><span>Lock — pause rotation</span></div>
+      <div class="panel-row"><span>Take both hands away</span><span>Check for solve</span></div>
+    </div>
+
+    <button id="start-btn" class="btn-engage">Engage camera</button>
+    <p id="boot-error" class="boot-error" role="alert"></p>
+    <p class="boot-footnote">Backend running locally. Click above to start the camera.</p>
+  </div>
+</div>
+
+<!-- ── LIVE APP STAGE ─────────────────────────────────────────────────────── -->
+<main id="stage" hidden>
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span> T-PERM / TOUCHLESS RUBIK'S MANIPULATION</div>
+    <div class="topbar-actions">
+      <button id="legend-toggle" class="btn-ghost">Gestures</button>
+      <button id="reset-btn" class="btn-ghost">New scramble</button>
+      <button id="quit-btn" class="btn-quit">Stop server</button>
+    </div>
+  </header>
+
+  <div class="viewport-wrap">
+    <div class="viewport-frame">
+      <img id="backend-stream" alt="Live AR cube stream from the Python backend" hidden />
+
+      <span class="bracket tl"></span><span class="bracket tr"></span>
+      <span class="bracket bl"></span><span class="bracket br"></span>
+
+      <div id="legend-panel" class="legend-panel">
+        <div class="panel-row panel-head"><span>GESTURE</span><span>ACTION</span></div>
+        <div class="panel-row"><span>Both hands together</span><span>Spawn the cube</span></div>
+        <div class="panel-row"><span>Twist / tilt wrist</span><span>Rotate view</span></div>
+        <div class="panel-row"><span>Palm down / up</span><span>Snap top / bottom</span></div>
+        <div class="panel-row"><span>Pinch edge + drag</span><span>Turn layer</span></div>
+        <div class="panel-row"><span>Open palm</span><span>Lock rotation</span></div>
+        <div class="panel-row"><span>Hands away</span><span>Check solve</span></div>
+      </div>
+    </div>
+
+    <div class="telemetry">
+      <div class="tel-item"><span class="tel-label">MODE</span><span class="tel-value" id="tel-mode">PYTHON BACKEND</span></div>
+      <div class="tel-item"><span class="tel-label">STATE</span><span class="tel-value" id="tel-state">IDLE</span></div>
+      <div class="tel-item"><span class="tel-label">HANDS</span><span class="tel-value" id="tel-hands">0</span></div>
+      <div class="tel-item"><span class="tel-label">RENDER FPS</span><span class="tel-value" id="tel-fps">0</span></div>
+      <div class="tel-item"><span class="tel-label">TRACK FPS</span><span class="tel-value" id="tel-detfps">0</span></div>
+      <div class="tel-item"><span class="tel-label">LAG</span><span class="tel-value" id="tel-lag">0</span></div>
+      <div class="tel-item"><span class="tel-label">HANDS TRACKED</span><span class="tel-value" id="tel-numhands">2</span></div>
+    </div>
+
+  </div>
+
+  <footer class="footbar"><strong>T-PERM</strong> — Touchless Permutation & Execution for Rubik's Manipulation.</footer>
+</main>
+
+<div id="quit-screen" hidden>
+  <div class="quit-card">
+    <h2>Server stopped</h2>
+    <p>The camera has been released and the terminal is free.<br />Run <code>npx t-perm</code> again to restart.</p>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

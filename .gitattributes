@@ -1,0 +1,9 @@
+# Treat the MediaPipe model as binary. Without this, autocrlf on Windows can
+# rewrite bytes that happen to look like line endings and silently corrupt it.
+*.task binary
+*.glb  binary
+
+# Keep shell scripts and the CLI LF so they stay executable on macOS/Linux
+*.sh   text eol=lf
+*.js   text eol=lf
+*.py   text eol=lf

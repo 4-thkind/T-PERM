@@ -12,7 +12,7 @@ from enum import Enum, auto
 import cv2
 import numpy as np
 import os
-from flask import Flask, Response, jsonify, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 import pyglet
@@ -22,18 +22,38 @@ from hand_tracker import HandTracker, WebcamStream
 from gesture_engine import (
     AbsentDetector,
     get_spawn_distance, is_cube_spawn_ready,
-    midpoint, is_pinch, is_fist, is_open_palm, get_wrist_rotation_quat,
+    midpoint, is_pinch, is_fist, is_open_palm,
     is_palm_facing_down, is_palm_facing_up
 )
-from cube.rubiks import solved_state, scramble, is_solved, apply_move, FACE_TO_MOVE
-from cube.renderer import CubeRenderer
+from cube.rubiks import solved_state, scramble, is_solved, apply_move
+from cube.renderer import CubeRenderer, LAYER_TURN_MOVE
 from utils.smoothing import EMA, QuatEMA
-from utils.transforms import quat_multiply, cube_axes_on_screen, snap_to_nearest_90
+from utils.transforms import (quat_multiply, quat_conjugate, cube_axes_on_screen,
+                              snap_to_nearest_90, hand_orientation_quat)
 import hud
 
 
+# Anchor every asset path to this file, never to the working directory. Under
+# `npx t-perm` the process is spawned from wherever the user happens to be.
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BACKEND_DIR, 'hand_landmarker.task')
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ── Tuning knobs ─────────────────────────────────────────────────────────────
+# Render/stream ceiling, and the main tuning knob for this app.
+#
+# The render loop and MediaPipe compete for CPU and for the GIL. Raise for a
+# smoother picture; lower to hand time back to detection. Tracking lag equals one
+# detection period, so TRACK FPS is what determines how well the skeleton sticks
+# to your hand. Adjustable at runtime: GET/POST /api/config?target_fps=30
+TARGET_FPS = 45
+# JPEG quality for the MJPEG stream. 65 encodes roughly 2x faster than 80.
+JPEG_QUALITY = 65
+# Port to serve on. The CLI passes T_PERM_PORT so `npx t-perm` and the browser
+# it opens always agree, even if the default is already taken.
+PORT = int(os.environ.get('T_PERM_PORT', 5000))
 
 
 class State(Enum):
@@ -58,6 +78,11 @@ class AREngine:
         self.state = State.IDLE
         self.hand_count = 0
         self.fps = 0
+        self.det_fps = 0
+        self.lag_ms = 0
+        self.target_fps = TARGET_FPS
+        self.num_hands = 2        # which detector is live right now
+        self._diag_frame = None   # recent raw frame, for /api/diagnose
         self.reset_requested = False
         self.current_jpeg = None
         self._perf_start = time.perf_counter()  # wall-clock base for MediaPipe timestamps
@@ -109,9 +134,13 @@ class AREngine:
         _latest_hands  = [[]]
         _latest_result = [None]
         _latest_gen    = [0]
+        _det_times     = []        # callback arrival times, for detection-FPS
+        _sent_at       = {}        # timestamp_ms -> perf_counter when submitted
+        _lags          = []        # submit -> landmarks-in-hand, milliseconds
 
         def _on_detection(result, image, timestamp_ms):
             """Called by MediaPipe on its own thread whenever results are ready."""
+            arrived = time.perf_counter()
             try:
                 hands = tracker.extract_hands(result, frame_w, frame_h)
             except Exception:
@@ -120,8 +149,54 @@ class AREngine:
                 _latest_hands[0]  = hands
                 _latest_result[0] = result
                 _latest_gen[0]   += 1
+                _det_times.append(arrived)
+                if len(_det_times) > 30:
+                    del _det_times[0]
+                # How stale the skeleton we're about to draw actually is. Frames
+                # the flow limiter dropped never call back, so their entries get
+                # pruned by age rather than popped.
+                started = _sent_at.pop(timestamp_ms, None)
+                if started is not None:
+                    _lags.append((arrived - started) * 1000.0)
+                    if len(_lags) > 30:
+                        del _lags[0]
 
-        tracker = HandTracker('hand_landmarker.task', result_callback=_on_detection)
+        # Two detectors, differing only in num_hands, both live.
+        #
+        # Measured on a real frame with ONE hand up: num_hands=2 takes 143ms per
+        # detection, num_hands=1 takes 66ms. The gap is the palm detector, which
+        # MediaPipe re-runs every frame while short of the hand count it was
+        # asked for. Input resolution changes nothing (640x360 vs 213x120 land
+        # within 2ms) - only the hand count does.
+        #
+        # Building a detector costs a few hundred ms of model load, so make both
+        # up front and switch, rather than rebuilding on transitions.
+        tracker = HandTracker(MODEL_PATH, result_callback=_on_detection,
+                              num_hands=2)
+        tracker_solo = HandTracker(MODEL_PATH, result_callback=_on_detection,
+                                   num_hands=1)
+        # Which detector to run is decided by what is actually in frame, not by
+        # which state we are in.
+        #
+        # num_hands=2 is only slow when it is SHORT of hands: MediaPipe re-runs
+        # the palm detector every frame hunting for the one it cannot find. Once
+        # both hands are visible it has nothing left to search for and costs
+        # about the same as num_hands=1. So the expensive case is exactly "asked
+        # for two, can see one".
+        #
+        # Rule: run the cheap solo detector while one hand is up, but re-probe
+        # with the two-hand detector every PROBE_EVERY frames so a second hand
+        # entering the frame is still noticed within a few hundred ms. Once two
+        # hands are seen, stay on the two-hand detector until one leaves.
+        # Probe every 6th frame: a second hand entering the frame is picked up
+        # within ~20-70ms, while only ~18% of lone-hand frames pay the slower
+        # two-hand detector. Probing every 12th halves that cost but lets the
+        # gap stretch to ~156ms, which is noticeable on the spawn gesture.
+        PROBE_EVERY = 6
+        SOLO_GRACE = 8            # detections of 0-1 hands before dropping to solo
+        two_hand_mode = True      # start wide so the spawn gesture is available
+        solo_streak = 0
+        probe_tick = 0
         last_processed_gen = 0
         # ────────────────────────────────────────────────────────────────────
 
@@ -154,6 +229,11 @@ class AREngine:
         pinch_released = True
 
         prev_hands = {}
+        # Offset between the driving hand's orientation and the cube's, captured
+        # when that hand takes control. None means "re-acquire on next frame".
+        grab_offset_q = None
+        grab_hand_label = None
+        snap_latched = False      # palm-flip snap fires once per flip, not per frame
         absent_detector = AbsentDetector(threshold_frames=48)
         completion_start_time = 0.0
         completion_solved = False
@@ -162,18 +242,22 @@ class AREngine:
 
         confetti_active = False
         frame_times = []
+        frames_seen = 0
         self.running = True
         print(">>> AR Engine Ready and Processing Frames! <<<")
 
         try:
             while self.running:
-                t_start = time.time()
+                # perf_counter, not time(): the pacing and FPS maths below
+                # subtract from this, and mixing the two clocks' epochs is nonsense.
+                t_start = time.perf_counter()
                 with self.lock:
                     if self.reset_requested:
                         cube_state = solved_state()
                         cube_state, _ = scramble(cube_state, n=20)
                         cube_rotation = np.array([0.0, 0.0, 0.0, 1.0])
                         rot_ema.reset()
+                        grab_offset_q = None
                         self.reset_requested = False
 
                 ret, frame = cap.read()
@@ -184,18 +268,40 @@ class AREngine:
                 frame = cv2.flip(frame, 1)
                 frame_h, frame_w = frame.shape[:2]
 
-                # Submit frame to async detection (non-blocking, returns in <0.1ms).
-                # 1/3 scale gives MediaPipe 9x fewer pixels to chew; landmarks are
-                # normalised 0-1 so the downscale costs no accuracy in mapping back.
-                # Submit every frame — LIVE_STREAM mode auto-drops when busy.
-                timestamp_ms = int((time.perf_counter() - self._perf_start) * 1000)
-                det_w, det_h = frame_w // 3, frame_h // 3
-                small = cv2.resize(frame, (det_w, det_h))
+                # Pick the detector from what was in frame last tick (updated
+                # further down, once this frame's results have been read).
+                # Timestamps come from one monotonic clock, so each detector
+                # still sees a strictly increasing sequence even though it only
+                # receives some of the frames.
+                probe_tick += 1
+                probing = (not two_hand_mode) and (probe_tick % PROBE_EVERY == 0)
+                active = tracker if (two_hand_mode or probing) else tracker_solo
+                self.num_hands = active.num_hands
+
+                # Submit every frame and let MediaPipe's flow limiter drop the
+                # excess. Do NOT gate submissions on a detection being in flight:
+                # measured, that roughly HALVES the detection rate (13.2 -> 7.6
+                # fps), because it idles the detector until the next iteration
+                # instead of keeping its pipeline fed.
+                #
+                # The 1/3 downscale shrinks the mp.Image copy. It does NOT speed
+                # up inference - MediaPipe rescales to the model's input size
+                # regardless, and 640x360 vs 213x120 measured within 2ms.
+                submit_t = time.perf_counter()
+                timestamp_ms = int((submit_t - self._perf_start) * 1000)
+                small = cv2.resize(frame, (frame_w // 3, frame_h // 3))
                 rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                with _cb_lock:
+                    _sent_at[timestamp_ms] = submit_t
+                    if len(_sent_at) > 120:      # dropped frames never call back
+                        for k in sorted(_sent_at)[:60]:
+                            del _sent_at[k]
                 try:
-                    tracker.detect_async(rgb_small, timestamp_ms)
+                    active.detect_async(rgb_small, timestamp_ms)
                 except ValueError:
-                    pass  # timestamp not monotonically increasing — skip this frame
+                    # timestamp not monotonically increasing — skip this frame
+                    with _cb_lock:
+                        _sent_at.pop(timestamp_ms, None)
 
                 # Read latest results from callback
                 with _cb_lock:
@@ -211,6 +317,18 @@ class AREngine:
                     tracker.draw_skeleton(frame, result)
 
                 self.hand_count = len(hands)
+
+                # Latch onto two-hand mode the moment a second hand appears, and
+                # only fall back after SOLO_GRACE consecutive lone-hand results,
+                # so one missed detection cannot drop a two-hand gesture.
+                if has_new_detection:
+                    if len(hands) >= 2:
+                        solo_streak = 0
+                        two_hand_mode = True
+                    else:
+                        solo_streak += 1
+                        if solo_streak >= SOLO_GRACE:
+                            two_hand_mode = False
 
                 # State machine — only update gestures when detection has new results
                 # On stale frames, we still render the cube but skip gesture logic
@@ -254,28 +372,72 @@ class AREngine:
                         lock_hand = None
                         if len(hands) >= 2:
                             lock_hand = next((h for h in hands if is_open_palm(h)), None)
+                        if lock_hand or not hands:
+                            # locked or hand gone: drop the offset so the cube is
+                            # picked up from its current pose next time, instead
+                            # of snapping back to where the hand left off
+                            grab_offset_q = None
 
                         if not lock_hand:
-                            palm_pitch_detected = False
-                            for hand in hands:
-                                if is_palm_facing_down(hand):
-                                    cube_rotation = np.array([0.7071, 0.0, 0.0, 0.7071])
-                                    palm_pitch_detected = True
-                                    break
-                                elif is_palm_facing_up(hand):
-                                    cube_rotation = np.array([-0.7071, 0.0, 0.0, 0.7071])
-                                    palm_pitch_detected = True
-                                    break
+                            # Drive the cube from where the hand actually points.
+                            #
+                            # This used to snap to two hard-coded quaternions the
+                            # moment the palm tilted past a threshold, and
+                            # otherwise integrate frame-to-frame deltas. Both
+                            # fought the hand: the snaps threw the measured angle
+                            # away and jumped to a canned pose, and the deltas
+                            # accumulated their own error until the cube no
+                            # longer corresponded to the hand at all.
+                            #
+                            # Instead: read the hand's ABSOLUTE orientation, and
+                            # remember the offset between it and the cube at the
+                            # moment control was taken. The cube is then always
+                            # exactly that offset from the live hand - it tracks
+                            # 1:1, holds still when the hand holds still, and
+                            # cannot drift.
+                            drive_hand = next(
+                                (h for h in hands if not is_pinch(h) and not is_fist(h)),
+                                None)
 
-                            if not palm_pitch_detected:
-                                for hand in hands:
-                                    prev = prev_hands.get(hand.label)
-                                    dq = get_wrist_rotation_quat(prev, hand)
-                                    if dq is not None:
-                                        cube_rotation = quat_multiply(cube_rotation, dq)
-                                        norm = np.linalg.norm(cube_rotation)
-                                        if norm > 1e-6:
-                                            cube_rotation /= norm
+                            # Deliberate palm flip still snaps to the Top/Bottom
+                            # face, but as a RE-GRAB rather than a hard pose: the
+                            # cube is set to the face you asked for, then the
+                            # offset is re-taken so continuous tracking carries
+                            # on from there instead of sticking at a fixed pose.
+                            if drive_hand is not None and not snap_latched:
+                                if is_palm_facing_down(drive_hand):
+                                    cube_rotation = np.array([0.7071, 0.0, 0.0, 0.7071])
+                                    grab_offset_q = None
+                                    snap_latched = True
+                                elif is_palm_facing_up(drive_hand):
+                                    cube_rotation = np.array([-0.7071, 0.0, 0.0, 0.7071])
+                                    grab_offset_q = None
+                                    snap_latched = True
+                            if drive_hand is not None and snap_latched:
+                                # only re-arm once the palm leaves the snap zone,
+                                # so holding it there does not freeze the cube
+                                if not (is_palm_facing_down(drive_hand)
+                                        or is_palm_facing_up(drive_hand)):
+                                    snap_latched = False
+
+                            if drive_hand is not None:
+                                hand_q = hand_orientation_quat(
+                                    drive_hand.palm_normal, drive_hand.finger_direction)
+                                if grab_offset_q is None or grab_hand_label != drive_hand.label:
+                                    # Take control without teleporting the cube:
+                                    # offset = current cube orientation relative
+                                    # to the hand right now.
+                                    grab_offset_q = quat_multiply(
+                                        cube_rotation, quat_conjugate(hand_q))
+                                    grab_hand_label = drive_hand.label
+                                cube_rotation = quat_multiply(grab_offset_q, hand_q)
+                                norm = np.linalg.norm(cube_rotation)
+                                if norm > 1e-6:
+                                    cube_rotation /= norm
+                            else:
+                                # pinching or fisted: that hand is doing something
+                                # else, so re-acquire the offset when it returns
+                                grab_offset_q = None
 
                         pinching_hand = next((h for h in hands if is_pinch(h)), None)
                         fist_hand = next((h for h in hands if is_fist(h)), None)
@@ -404,10 +566,14 @@ class AREngine:
 
                     if snap_frame >= SNAP_FRAMES:
                         if face_rot_face:
+                            # LAYER_TURN_MOVE is the move equal to ONE +90 step of
+                            # the renderer's rotation for this layer, so the state
+                            # always ends up matching what was just animated.
+                            # turns is taken mod 4, so a -90 drag becomes three
+                            # +90 moves - same result, no sign handling needed.
                             turns = int(round(snap_target_angle / 90.0)) % 4
-                            cw_move, ccw_move = FACE_TO_MOVE.get(face_rot_face, ('F', "F'"))
-                            for _ in range(abs(turns)):
-                                move = cw_move if turns > 0 else ccw_move
+                            move = LAYER_TURN_MOVE[face_rot_face]
+                            for _ in range(turns):
                                 cube_state = apply_move(cube_state, move)
 
                         face_rot_face = None
@@ -440,31 +606,43 @@ class AREngine:
 
                 self.state = state
 
-                # FPS calculation
-                t_end = time.time()
-                frame_times.append(t_end - t_start)
-                if len(frame_times) > 30:
-                    frame_times.pop(0)
-                avg_time = sum(frame_times) / len(frame_times) if frame_times else 0.033
-                self.fps = int(1.0 / avg_time) if avg_time > 0 else 0
-
-                # Encode frame to JPEG (quality 65 is ~2x faster than 80, still looks good)
-                ok, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                ok, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 if ok:
                     with self.lock:
                         self.current_jpeg = jpeg.tobytes()
                     self.frame_event.set()
 
-                # Frame pacing: target ~45fps to free CPU for MediaPipe detection
-                elapsed = time.time() - t_start
-                target = 1.0 / 45.0
-                if elapsed < target:
-                    time.sleep(target - elapsed)
+                # Frame pacing. Always yield at least a sliver: if the loop can't
+                # hit the target the sleep would otherwise never fire, and the
+                # main thread would spin without ever handing the GIL to the
+                # MediaPipe callback that has to deliver the landmarks.
+                elapsed = time.perf_counter() - t_start
+                target = 1.0 / max(self.target_fps, 1)
+                time.sleep(max(target - elapsed, 0.001))
+
+                # Render FPS - measured across the FULL period including the
+                # sleep. Timing only the work before it reports how fast a frame
+                # could have been built, not how many actually ship.
+                frame_times.append(time.perf_counter() - t_start)
+                if len(frame_times) > 30:
+                    frame_times.pop(0)
+                avg = sum(frame_times) / len(frame_times)
+                self.fps = int(1.0 / avg) if avg > 0 else 0
+
+                # Detection FPS and skeleton staleness - the numbers that decide
+                # how well tracking sticks to the hand.
+                with _cb_lock:
+                    span = _det_times[-1] - _det_times[0] if len(_det_times) > 1 else 0.0
+                    n_det = len(_det_times)
+                    lag = sorted(_lags)[len(_lags) // 2] if _lags else 0.0
+                self.det_fps = int((n_det - 1) / span) if span > 0 else 0
+                self.lag_ms = int(lag)
 
         finally:
             self.running = False
             renderer.cleanup()
             tracker.close()
+            tracker_solo.close()
             cap.release()
             gl_window.close()
             print("Engine stopped cleanly.")
@@ -499,7 +677,7 @@ def health():
     })
 
 
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), '..', 'frontend')
+FRONTEND_DIR = os.path.join(BACKEND_DIR, '..', 'frontend')
 
 
 @app.route('/')
@@ -524,7 +702,113 @@ def status():
         "state": engine.state.name,
         "hands": engine.hand_count,
         "fps": engine.fps,
+        "det_fps": engine.det_fps,
+        "lag_ms": engine.lag_ms,
+        "target_fps": engine.target_fps,
+        "num_hands": engine.num_hands,
     })
+
+
+@app.route('/api/diagnose')
+def diagnose():
+    """Benchmark MediaPipe on a real frame from THIS camera, with YOUR hand in it.
+
+    Visit with a hand held up; takes ~10s and eats CPU while it runs.
+
+    hands_found matters: a config that finds no hand is meaningless, because
+    MediaPipe returns early without running the landmark model at all and looks
+    about 10x faster than it really is.
+    """
+    import statistics
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
+
+    frame = engine._diag_frame
+    if frame is None:
+        return jsonify({"error": "no frame captured yet - is the engine running?"}), 503
+
+    h, w = frame.shape[:2]
+
+    def bench(num_hands, divisor, reps=12):
+        small = cv2.resize(frame, (w // divisor, h // divisor))
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        det = mp_vision.HandLandmarker.create_from_options(
+            mp_vision.HandLandmarkerOptions(
+                base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
+                running_mode=mp_vision.RunningMode.VIDEO, num_hands=num_hands,
+                min_hand_detection_confidence=0.4, min_hand_presence_confidence=0.4,
+                min_tracking_confidence=0.4))
+        ts = 0
+        for _ in range(4):
+            ts += 33
+            det.detect_for_video(img, ts)
+        times, found = [], 0
+        for _ in range(reps):
+            ts += 33
+            t0 = time.perf_counter()
+            r = det.detect_for_video(img, ts)
+            times.append((time.perf_counter() - t0) * 1000.0)
+            found += len(r.hand_landmarks)
+        det.close()
+        return {
+            "num_hands": num_hands,
+            "input": "%dx%d" % (small.shape[1], small.shape[0]),
+            "ms_per_detect": round(statistics.median(times), 1),
+            "detects_per_sec": round(1000.0 / statistics.median(times), 1),
+            "hands_found": round(found / reps, 2),
+        }
+
+    runs = [bench(n, d) for n, d in ((2, 3), (1, 3), (2, 2), (2, 6), (1, 6))]
+    usable = [r for r in runs if r["hands_found"] > 0]
+    best = min(usable, key=lambda r: r["ms_per_detect"]) if usable else None
+    current = runs[0]
+    return jsonify({
+        "note": "ignore any row with hands_found = 0; it never ran the landmark model",
+        "source_frame": "%dx%d" % (w, h),
+        "current_setting": current,
+        "fastest_usable": best,
+        "speedup_available": (round(current["ms_per_detect"] / best["ms_per_detect"], 2)
+                              if best else None),
+        "results": runs,
+    })
+
+
+@app.route('/api/config', methods=['GET', 'POST'])
+def config():
+    """Live-tune the render cap without a restart: /api/config?target_fps=30
+
+    Render rate and tracking rate trade against each other - they share the CPU
+    and the GIL. Sweep this while watching TRACK FPS to find the knee.
+    """
+    raw = request.args.get('target_fps')
+    if raw is not None:
+        try:
+            engine.target_fps = max(1, min(240, int(raw)))
+        except ValueError:
+            return jsonify({"error": "target_fps must be an integer"}), 400
+    return jsonify({"target_fps": engine.target_fps})
+
+
+@app.route('/api/shutdown', methods=['POST'])
+def shutdown():
+    """Stop the engine and exit the process, so the terminal returns to a prompt.
+
+    POST only: a GET here would let a stray browser prefetch or a page reload
+    kill the app. Clearing engine.running lets the main loop fall out of its
+    `while` and run its finally block, which releases the camera and GL context
+    cleanly. The exit itself is deferred to a daemon thread so this request can
+    still return 200 before the interpreter goes away.
+    """
+    engine.running = False
+
+    def _exit_soon():
+        time.sleep(0.6)      # let the main loop finish its cleanup first
+        os._exit(0)          # hard exit: Flask runs on a daemon thread
+
+    threading.Thread(target=_exit_soon, daemon=True).start()
+    return jsonify({"status": "shutting down"})
 
 
 @app.route('/api/reset', methods=['POST', 'GET'])
@@ -544,11 +828,11 @@ def video_feed():
 
 
 # FIX: Use werkzeug make_server directly so we can set SO_REUSEADDR.
-# Without this, the OS holds port 5000 in TIME_WAIT after shutdown and
+# Without this, the OS holds the port in TIME_WAIT after shutdown and
 # a quick manual restart fails to bind — causing a startup delay or crash.
 def run_flask():
     from werkzeug.serving import make_server
-    srv = make_server('0.0.0.0', 5000, app, threaded=True)
+    srv = make_server('0.0.0.0', PORT, app, threaded=True)
     srv.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.serve_forever()
 
@@ -566,11 +850,15 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
+    if not os.path.exists(MODEL_PATH):
+        print(f"ERROR: model not found at {MODEL_PATH}")
+        raise SystemExit(1)
+
     print("Starting Flask Server in Background Thread...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     time.sleep(0.5)
 
     print("Starting AR Engine on Main Thread...")
-    print("\n  AR Rubik's Cube running at http://localhost:5000\n")
+    print(f"\n  T-PERM running at http://localhost:{PORT}\n")
     engine.run_main_loop()

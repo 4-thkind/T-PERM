@@ -1,0 +1,49 @@
+{
+  "name": "t-perm",
+  "version": "1.0.0",
+  "description": "T-PERM - gesture-driven AR Rubik's Cube in your browser. Webcam hand tracking via MediaPipe, 3D cube rendered with OpenGL. Requires Python 3.9+.",
+  "bin": {
+    "t-perm": "./bin/t-perm.js"
+  },
+  "files": [
+    "bin/",
+    "backend/*.py",
+    "backend/hand_landmarker.task",
+    "backend/requirements.txt",
+    "backend/cube/*.py",
+    "backend/utils/*.py",
+    "frontend/",
+    "README.md",
+    "LICENSE",
+    "!backend/test_*.py",
+    "!backend/diagnose_tracking.py",
+    "!**/__pycache__/**"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "keywords": [
+    "ar",
+    "rubiks",
+    "rubiks-cube",
+    "mediapipe",
+    "opencv",
+    "gesture",
+    "hand-tracking",
+    "computer-vision",
+    "webcam"
+  ],
+  "author": "Utkarsh <utkarshsingh72007@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/4-thkind/T-PERM.git"
+  },
+  "homepage": "https://github.com/4-thkind/T-PERM#readme",
+  "bugs": {
+    "url": "https://github.com/4-thkind/T-PERM/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

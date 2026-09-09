@@ -7,11 +7,14 @@ backend/__pycache__/
 backend/cube/__pycache__/
 backend/utils/__pycache__/
 
-# Large models / binary assets (>100MB)
+# Large binary assets
 backend/*.glb
 backend/debug_*.jpg
-backend/*.task
 *.diff
+
+# NOTE: backend/hand_landmarker.task (7.5MB) is deliberately COMMITTED.
+# The app cannot start without it, so a fresh clone must include it. It is well
+# under GitHub's 50MB warning threshold, so no Git LFS is needed.
 
 # Environment & Node
 .env

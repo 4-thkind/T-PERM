@@ -204,7 +204,7 @@ ar-rubiks/
 │   ├── server.py              # Main OpenGL execution loop and Flask MJPEG server
 │   └── test_rubiks.py         # Self-check for the permutation engine
 ├── bin/
-│   └── ar-rubiks.js           # CLI runner: dependency check and launch
+│   └── t-perm.js              # CLI runner: dependency check, launch, browser open
 ├── frontend/
 │   ├── css/
 │   │   └── style.css          # Dark console user interface styling
@@ -230,13 +230,27 @@ ar-rubiks/
 
 ---
 
-### Method 1: Quick Launch via Node CLI
+### Method 1: One command, nothing to clone
 
 ```bash
-node bin/ar-rubiks.js
+npx t-perm
 ```
 
-The runner locates Python, verifies `hand_landmarker.task` is present, installs the Python dependencies **only if they are not already importable**, starts `server.py`, and opens the console at `http://localhost:5000`. Pass `--deps` to force a dependency reinstall.
+That is the whole install. The runner locates Python, installs the Python
+dependencies **only if they are not already importable** (first run only), starts
+the backend, waits for it to actually answer, then opens the console in your
+browser. The MediaPipe model ships inside the package, so there is nothing else
+to download.
+
+Stop it with the **Stop server** button in the page, or `Ctrl+C` in the terminal —
+either releases the camera and returns the terminal to a prompt.
+
+Flags and environment:
+
+| | |
+|:--|:--|
+| `npx t-perm --deps` | Force a dependency reinstall |
+| `T_PERM_PORT=8080 npx t-perm` | Serve on a different port |
 
 ---
 
@@ -296,6 +310,7 @@ No test framework required — it is a plain script of assertions.
 | `/health` | `GET` | `application/json` | Heartbeat: `{"status": "ok", "name": ..., "running": bool}`. |
 | `/api/status` | `GET` | `application/json` | Telemetry: `{"running": bool, "state": "HOLDING", "hands": 2, "fps": 44}`. |
 | `/api/reset` | `POST` / `GET` | `application/json` | Re-solves the cube and applies a new random 20-move scramble. |
+| `/api/shutdown` | `POST` | `application/json` | Stops the engine and exits the process, releasing the camera and freeing the terminal. `POST` only, so a browser prefetch or reload cannot kill the app. |
 
 ---
 
