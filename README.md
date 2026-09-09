@@ -233,7 +233,7 @@ ar-rubiks/
 ### Method 1: One command, nothing to clone
 
 ```bash
-npx t-perm
+npx tperm-visor
 ```
 
 That is the whole install. The runner locates Python, installs the Python
@@ -249,8 +249,8 @@ Flags and environment:
 
 | | |
 |:--|:--|
-| `npx t-perm --deps` | Force a dependency reinstall |
-| `T_PERM_PORT=8080 npx t-perm` | Serve on a different port |
+| `npx tperm-visor --deps` | Force a dependency reinstall |
+| `T_PERM_PORT=8080 npx tperm-visor` | Serve on a different port |
 
 ---
 
