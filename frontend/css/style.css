@@ -17,6 +17,11 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute is only a UA-level `display:none`, so any author rule
+   that sets `display` overrides it - which silently unhid #quit-screen on page
+   load. Make `hidden` win everywhere. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;

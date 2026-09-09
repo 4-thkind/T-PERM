@@ -84,7 +84,7 @@ const TASK = path.join(BACKEND, 'hand_landmarker.task');
 if (!fs.existsSync(TASK)) {
   abort(
     `MediaPipe model missing: ${TASK}\n` +
-    '  If you installed via npx:  npm cache clean --force && npx t-perm\n' +
+    '  If you installed via npx:  npm cache clean --force && npx tperm-visor\n' +
     '  If you cloned the repo:    re-clone; the model is committed at\n' +
     '                             backend/hand_landmarker.task'
   );

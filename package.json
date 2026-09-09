@@ -1,6 +1,6 @@
 {
   "name": "tperm-visor",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "T-PERM - gesture-driven AR Rubik's Cube in your browser. Webcam hand tracking via MediaPipe, 3D cube rendered with OpenGL. Requires Python 3.9+.",
   "bin": {
     "tperm-visor": "bin/t-perm.js"
