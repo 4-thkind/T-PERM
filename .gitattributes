@@ -1,9 +1,9 @@
-# Treat the MediaPipe model as binary. Without this, autocrlf on Windows can
-# rewrite bytes that happen to look like line endings and silently corrupt it.
-*.task binary
-*.glb  binary
-
-# Keep shell scripts and the CLI LF so they stay executable on macOS/Linux
-*.sh   text eol=lf
-*.js   text eol=lf
-*.py   text eol=lf
+# The CLI is executed directly via its `#!/usr/bin/env node` shebang. A CRLF
+# ending makes the kernel look for an interpreter literally named "node\r",
+# so `npx t-perm` fails on Linux and macOS. Force LF on the executable script.
+#
+# Git already auto-detects binary files (verified: hand_landmarker.task
+# round-trips byte-identical with core.autocrlf=true), so no rules are needed
+# for *.task or *.glb.
+bin/*.js text eol=lf
+*.sh      text eol=lf

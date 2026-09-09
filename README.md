@@ -1,6 +1,6 @@
 <div align="center">
 
-# T-PERM[ working @ it]
+# T-PERM
 ### [ Touchless Permutation & Execution for Rubik’s Manipulation ]
 
 <br/>
