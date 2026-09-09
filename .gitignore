@@ -10,6 +10,8 @@ backend/utils/__pycache__/
 # Large models / binary assets (>100MB)
 backend/*.glb
 backend/debug_*.jpg
+backend/*.task
+*.diff
 
 # Environment & Node
 .env
