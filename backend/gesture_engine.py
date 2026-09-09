@@ -4,12 +4,9 @@ Stateless gesture classifiers + stateful detectors (throw, absent).
 Pattern mirrors Gesture-Media-control baseline: deque buffers, EMA, cooldowns.
 """
 
-from typing import Optional
-
 import numpy as np
 
 from hand_tracker import HandData
-from utils.transforms import delta_rotation
 
 
 # ── Distance helpers ──────────────────────────────────────────────────────────
@@ -107,24 +104,3 @@ class AbsentDetector:
 
     def reset(self):
         self.counter = 0
-
-
-# ── Wrist rotation delta ──────────────────────────────────────────────────────
-
-def get_wrist_rotation_quat(prev_hand: Optional[HandData], curr_hand: HandData) -> Optional[np.ndarray]:
-    """
-    Returns delta rotation quaternion [x,y,z,w] from hand orientation change between frames.
-    Uses both palm normal and finger direction for full 3D tracking.
-    Returns None if prev_hand is unavailable or rotation is too small (noise).
-    """
-    if prev_hand is None:
-        return None
-    q = delta_rotation(
-        prev_hand.palm_normal, curr_hand.palm_normal,
-        prev_hand.finger_direction, curr_hand.finger_direction
-    )
-    # Ignore tiny rotations (noise floor)
-    angle = 2.0 * np.degrees(np.arccos(np.clip(abs(q[3]), 0.0, 1.0)))
-    if angle < 0.5:
-        return None
-    return q
