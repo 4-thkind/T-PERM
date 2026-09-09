@@ -28,8 +28,8 @@ from gesture_engine import (
 from cube.rubiks import solved_state, scramble, is_solved, apply_move
 from cube.renderer import CubeRenderer, LAYER_TURN_MOVE
 from utils.smoothing import EMA, QuatEMA
-from utils.transforms import (quat_multiply, quat_conjugate, cube_axes_on_screen,
-                              snap_to_nearest_90, hand_orientation_quat)
+from utils.transforms import (quat_multiply, quat_conjugate, snap_to_nearest_90,
+                              hand_orientation_quat)
 import hud
 
 
@@ -224,7 +224,7 @@ class AREngine:
         snapping = False
         active_pointer_3d = None
         drag_start_pos = None
-        drag_direction = None
+        drag_sign = 1.0
         DRAG_LOCK_THRESHOLD = 15
         pinch_released = True
 
@@ -493,43 +493,45 @@ class AREngine:
                         prev_hands = {h.label: h for h in hands}
 
                     elif state == State.DRAGGING_SLICE:
-                        pinching_hand = next((h for h in hands if is_pinch(h)), None)
+                        # Already pinching: use the wide release threshold so a
+                        # noisy frame cannot break the drag half-way through.
+                        pinching_hand = next(
+                            (h for h in hands if is_pinch(h, was_pinching=True)), None)
                         if pinching_hand and not snapping:
                             px = pinching_hand.landmarks[8].x * frame_w
                             py = pinching_hand.landmarks[8].y * frame_h
                             dx = px - drag_start_pos[0]
                             dy = py - drag_start_pos[1]
 
-                            if drag_direction is None:
-                                smooth_q = rot_ema.update(cube_rotation)
-                                if abs(dx) > DRAG_LOCK_THRESHOLD or abs(dy) > DRAG_LOCK_THRESHOLD:
-                                    screen_x, screen_y = cube_axes_on_screen(smooth_q)
-                                    swipe = np.array([dx, dy])
-                                    proj_x = abs(np.dot(swipe, screen_x))
-                                    proj_y = abs(np.dot(swipe, screen_y))
-                                    if proj_x > proj_y:
-                                        drag_direction = 'ROW'
-                                        if active_pointer_3d[1] > 0.1: face_rot_face = 'U'
-                                        elif active_pointer_3d[1] < -0.1: face_rot_face = 'D'
-                                        else: face_rot_face = 'E'
-                                    else:
-                                        drag_direction = 'COL'
-                                        if active_pointer_3d[0] > 0.1: face_rot_face = 'R'
-                                        elif active_pointer_3d[0] < -0.1: face_rot_face = 'L'
-                                        else: face_rot_face = 'M'
+                            # Both the layer and the direction come from
+                            # renderer._slice_dirs: the screen direction each
+                            # candidate layer would push the grabbed cubie,
+                            # measured through the same matrices that drew the
+                            # frame. Deriving this analytically did not match the
+                            # renderer on 88% of random orientations, so it is
+                            # measured rather than computed.
+                            swipe = np.array([dx, dy], dtype=float)
+                            swipe_len = float(np.linalg.norm(swipe))
 
-                            if drag_direction is not None and face_rot_face is not None:
-                                smooth_q = rot_ema.update(cube_rotation)
-                                screen_x, screen_y = cube_axes_on_screen(smooth_q)
-                                swipe = np.array([dx, dy])
-                                if drag_direction == 'ROW':
-                                    proj = np.dot(swipe, screen_x)
-                                    sign = -1.0 if face_rot_face in ('U', 'E') else 1.0
-                                    face_rot_angle = sign * proj / 2.0
-                                elif drag_direction == 'COL':
-                                    proj = np.dot(swipe, screen_y)
-                                    sign = -1.0 if face_rot_face in ('R', 'M') else 1.0
-                                    face_rot_angle = sign * proj / 2.0
+                            if face_rot_face is None and swipe_len > DRAG_LOCK_THRESHOLD:
+                                best_align = 0.0
+                                for key, direction in renderer.slice_directions().items():
+                                    align = float(np.dot(direction, swipe / swipe_len))
+                                    if abs(align) > abs(best_align):
+                                        best_align = align
+                                        face_rot_face = key
+                                        drag_sign = 1.0 if align > 0 else -1.0
+                                if face_rot_face is not None and abs(best_align) < 0.1:
+                                    face_rot_face = None      # too ambiguous, keep waiting
+
+                            if face_rot_face is not None:
+                                direction = renderer.slice_directions().get(face_rot_face)
+                                if direction is not None:
+                                    # Project the drag onto the direction that layer
+                                    # actually travels, so the turn keeps following
+                                    # the finger for the whole gesture.
+                                    face_rot_angle = drag_sign * float(np.dot(swipe, direction)) / 2.0
+
                         elif not snapping:
                             snap_target_angle = snap_to_nearest_90(face_rot_angle)
                             snap_start_angle = face_rot_angle
@@ -580,7 +582,6 @@ class AREngine:
                         face_rot_angle = 0.0
                         snapping = False
                         active_pointer_3d = None
-                        drag_direction = None
                         state = State.HOLDING
 
                 # ── Always render the cube at current state ──

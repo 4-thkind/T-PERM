@@ -62,10 +62,27 @@ def is_open_palm(hand: HandData) -> bool:
     return extended >= 4 and thumb_idx_dist > 0.08
 
 
-def is_pinch(hand: HandData) -> bool:
-    """Thumb tip ↔ index tip closer than 0.06 normalised units."""
-    d = _norm_dist(hand.landmarks, 4, 8)
-    return d < 0.06
+# Hysteresis band for the pinch. A single threshold makes the gesture drop out
+# whenever landmark noise nudges the distance across it, which ends a drag
+# mid-swipe. Requiring a firm pinch to START but a clearly-open hand to RELEASE
+# means jitter around the boundary cannot break contact.
+PINCH_CLOSE = 0.055   # must get at least this close to begin pinching
+PINCH_OPEN  = 0.085   # must open at least this wide to stop
+
+
+def pinch_distance(hand: HandData) -> float:
+    """Thumb tip to index tip, in normalised units."""
+    return _norm_dist(hand.landmarks, 4, 8)
+
+
+def is_pinch(hand: HandData, was_pinching: bool = False) -> bool:
+    """True while the thumb and index finger are pinched together.
+
+    Pass the previous frame's state to get hysteresis; without it this is a
+    plain threshold at PINCH_CLOSE.
+    """
+    d = pinch_distance(hand)
+    return d < (PINCH_OPEN if was_pinching else PINCH_CLOSE)
 
 
 # ── Palm orientation ──────────────────────────────────────────────────────────
