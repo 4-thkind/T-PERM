@@ -5,7 +5,7 @@
 
 <br/>
 
-<img src="assets/poster.jpeg" alt="T-PERM Poster" width="460" style="max-width: 100%; object-fit: cover; border-radius: 8px;" />
+<img src="assets/poster.jpeg" alt="T-PERM Poster"  />
 
 <br/><br/>
 
