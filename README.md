@@ -5,7 +5,7 @@
 
 <br/>
 
-<img src="assets/poster.jpeg" alt="T-PERM Poster" width="420" style="border-radius: 8px; margin-top: 15px; margin-bottom: 25px;  />
+<img src="assets/poster.jpeg" width="420" alt="T-PERM Poster"  style="border-radius: 8px; margin-top: 15px; margin-bottom: 25px;  />
 
 <br/><br/>
 
